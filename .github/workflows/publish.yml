@@ -1,0 +1,85 @@
+name: Publish
+
+# Publishing is release-only: nothing reaches PyPI unless a GitHub release is
+# published for a `v*` tag. No credentials are stored: PyPI trusted publishing
+# (OIDC) mints a short-lived token for this workflow. The version comes from the
+# tag (setuptools-scm).
+#
+# Setup before the first upload (project owner, once):
+#   1. PyPI -> Account -> Publishing -> add a pending trusted publisher:
+#        Project: bioio-vsi  Owner: szarma  Repository: bioio-vsi
+#        Workflow: publish.yml  Environment: pypi
+#   2. GitHub -> Settings -> Environments -> create `pypi` before the first
+#      release (required reviewer: the owner; deployments limited to `v*` tags).
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Released commit must be on main
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_SHA is not on main"; exit 1; }
+
+      - name: CI must have succeeded for the released commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count')
+          test "$n" -ge 1 || { echo "::error::no successful CI run for $GITHUB_SHA"; exit 1; }
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      # A tag that setuptools-scm does not read as a clean release version would
+      # upload a dev version to an index that never allows replacing one.
+      - name: Built version must match the tag
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          ls dist/
+          test -f "dist/bioio_vsi-$v-py3-none-any.whl" \
+            || { echo "::error::no wheel for version $v"; exit 1; }
+
+      - name: Check metadata renders on the index
+        run: uvx 'twine==6.2.0' check --strict dist/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distributions
+          path: dist/
+
+  pypi:
+    name: Upload to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/bioio-vsi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
