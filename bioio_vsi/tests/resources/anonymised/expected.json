@@ -1,0 +1,156 @@
+{
+  "czt-z-up": {
+    "ets": {
+      "n_levels": 1,
+      "origin_offset": [
+        0,
+        0
+      ]
+    },
+    "vsi": {
+      "sizes": {
+        "c": 4,
+        "z": 202,
+        "t": 1
+      },
+      "n_levels": 1,
+      "dtype": "uint16",
+      "pixel_size_um": [
+        0.25,
+        0.25
+      ],
+      "z_step_um": 1.0,
+      "z_start_um": 100.0,
+      "emission_wavelengths_nm": [
+        460.0,
+        525.0,
+        595.0,
+        670.0
+      ],
+      "camera_bit_depth": 16,
+      "plane_z_um_first_last": [
+        100.0,
+        301.0
+      ],
+      "plane_time_ms_max": 807000.0
+    }
+  },
+  "single-plane": {
+    "ets": {
+      "n_levels": 1,
+      "origin_offset": [
+        0,
+        0
+      ]
+    },
+    "vsi": {
+      "sizes": {
+        "t": 1,
+        "z": 1,
+        "c": 4
+      },
+      "n_levels": 1,
+      "dtype": "uint16",
+      "pixel_size_um": [
+        0.25,
+        0.25
+      ],
+      "z_step_um": null,
+      "z_start_um": null,
+      "emission_wavelengths_nm": [
+        460.0,
+        525.0,
+        595.0,
+        670.0
+      ],
+      "camera_bit_depth": 16,
+      "plane_z_um_first_last": [
+        100.0,
+        100.0
+      ],
+      "plane_time_ms_max": 3000.0
+    }
+  },
+  "stitched-origin-1": {
+    "ets": {
+      "n_levels": 1,
+      "origin_offset": [
+        -1,
+        -1
+      ]
+    },
+    "stitched": {
+      "sizes": {
+        "c": 4,
+        "z": 45,
+        "t": 1
+      },
+      "n_levels": 1,
+      "stored_levels": 5,
+      "dtype": "uint16",
+      "shape_yx": [
+        4260,
+        8177
+      ]
+    }
+  },
+  "stitched-origin-15": {
+    "ets": {
+      "n_levels": 1,
+      "origin_offset": [
+        -15,
+        -1
+      ]
+    },
+    "stitched": {
+      "sizes": {
+        "c": 4,
+        "z": 1,
+        "t": 1
+      },
+      "n_levels": 1,
+      "stored_levels": 6,
+      "dtype": "uint16",
+      "shape_yx": [
+        6219,
+        10122
+      ]
+    }
+  },
+  "tzc-z-down": {
+    "ets": {
+      "n_levels": 1,
+      "origin_offset": [
+        0,
+        0
+      ]
+    },
+    "vsi": {
+      "sizes": {
+        "t": 1,
+        "z": 90,
+        "c": 4
+      },
+      "n_levels": 1,
+      "dtype": "uint16",
+      "pixel_size_um": [
+        0.25,
+        0.25
+      ],
+      "z_step_um": -1.0,
+      "z_start_um": 100.0,
+      "emission_wavelengths_nm": [
+        460.0,
+        525.0,
+        595.0,
+        670.0
+      ],
+      "camera_bit_depth": 16,
+      "plane_z_um_first_last": [
+        100.0,
+        11.0
+      ],
+      "plane_time_ms_max": 359000.0
+    }
+  }
+}

@@ -1,0 +1,9 @@
+File: (redacted)
+Document: OLYMPUS cellSens Dimension 3.1 (build 21199)
+Format: 3.22 (build 21199)
+
+Image stack 1:
+  size: 1645 x 1682
+  dimension sizes (2003): [1, 11, 2]
+  slot order: [T, Z, C, empty]
+  pixel file: PRESENT, uint16, JPEG 2000, 1645x1682 tiles, 22 records, 6D coords; index not validated

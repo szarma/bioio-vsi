@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-type-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+        codecs: ["", "codecs"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          extras="test"
+          if [ -n "${{ matrix.codecs }}" ]; then
+            extras="${extras},${{ matrix.codecs }}"
+          fi
+          uv sync --extra "$extras"
+      - name: Ruff
+        run: uv run ruff check bioio_vsi
+      - name: Mypy
+        run: uv run mypy bioio_vsi
+      - name: Pytest
+        run: uv run pytest -q
+
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Build sdist and wheel from sdist
+        run: |
+          uv build --sdist
+          SDIST=$(ls -1 dist/*.tar.gz | head -1)
+          uv build "$SDIST" --wheel
+      - name: Install wheel outside checkout and test
+        run: |
+          WHEEL=$(ls -1 dist/*.whl | head -1)
+          uv venv /tmp/wheel-venv
+          uv pip install --python /tmp/wheel-venv/bin/python "$WHEEL"[test,codecs]
+          mkdir -p /tmp/wheel-test-cwd
+          cd /tmp/wheel-test-cwd
+          env -u PYTHONPATH /tmp/wheel-venv/bin/python -c "import bioio_vsi; assert bioio_vsi.__file__.startswith('/tmp/wheel-venv')"
+          # The wheel ships without tests; run the checkout's tests against the installed code.
+          PKG=$(env -u PYTHONPATH /tmp/wheel-venv/bin/python -c "import bioio_vsi, os; print(os.path.dirname(bioio_vsi.__file__))")
+          test ! -e "$PKG/tests"
+          cp -r "$GITHUB_WORKSPACE/bioio_vsi/tests" "$PKG/tests"
+          env -u PYTHONPATH /tmp/wheel-venv/bin/python -m pytest -q --pyargs bioio_vsi.tests
