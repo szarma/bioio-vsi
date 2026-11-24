@@ -1,8 +1,8 @@
 # Sample files
 
-Public VSI files found on 2026-10-13, where they came from, and what each may be
-used for. Downloaded copies live in `data/` (gitignored). Anonymised fixtures, committed
-for the tests, are listed at the end.
+Public VSI files used by the project, where they came from, and what each may
+be used for. Downloaded copies live in `data/` (gitignored). The anonymised
+test fixtures are listed at the end.
 
 "CI" below means: the licence allows redistribution, so the file may back tests
 that run in public CI.
@@ -16,6 +16,13 @@ that run in public CI.
 | `zenodo-18163893` | [10.5281/zenodo.18163893](https://doi.org/10.5281/zenodo.18163893), B. Hyklova and I. Svecova; mirrored by OME | CC BY 4.0 | 1.09 GB (four stacks of 109 to 435 MB) | cellSens Dimension 4.3 (builds 31056 and 35701) | 41 z, one channel, 1152 or 2304 px square, uint16 raw; two are deconvolved copies | yes by licence, too large to fetch per run |
 | `zenodo-8161864` | [10.5281/zenodo.8161864](https://doi.org/10.5281/zenodo.8161864), J. Ross | CC BY 4.0 | 1.41 GB zip | VS200 ASW 3.4.1 (build 26606) | one H&E slide at 20x, 67170 x 58321, plus label, overview, focus map | yes by licence, too large |
 | `ome-cellsens/evident` | <https://downloads.openmicroscopy.org/images/CellSens/evident/> | none stated | 0.93 GB | VS200 ASW 4.1 (builds 27540, 27544) | three slides: brightfield RGB JPEG; 4-channel fluorescence JPEG 2000; the same with 5 z | no |
+| `openslide-olympus/OS-1` | [OpenSlide Olympus test data](https://openslide.cs.cmu.edu/download/openslide-testdata/Olympus/), [reported by Mathieu Malaterre](https://github.com/szarma/bioio-vsi/issues/4#issuecomment-6980447715) | free to use and distribute, with or without modification | 494 MiB zip | VS-ASW FL 2.6 (build 10555) | H&E brightfield, RGB JPEG 2000, main scan 66982 x 76963 and overview 6753 x 13196 | yes by licence, opt-in by size |
+
+For the `OS-1` scanner regression, extract `OS-1.zip` into
+`$VSI_PUBLIC_SAMPLES/openslide-olympus/` (default `data/openslide-olympus/`).
+The test expects `OS-1.vsi` and the adjacent `_OS-1_/` folder.
+The archive SHA-256 is
+`a273c82158b97554f1286146a841998ff1e05fd0dcb987a9feb81a18c9f3e1be`.
 
 The OME directory `https://downloads.openmicroscopy.org/images/CellSens/` also
 mirrors the second and third Zenodo records with a `COPYING` file each. The
@@ -28,8 +35,8 @@ back structural facts but no pixel comparison.
 
 ## Coverage, and what is missing
 
-Covered by at least one public file: cellSens Dimension 3.1 and 4.3; VS200 ASW
-3.4.1 and 4.1; raw, JPEG and JPEG 2000 tiles; uint8 RGB and uint16 grey; z
+Covered by at least one public file: cellSens Dimension 3.1 and 4.3; VS-ASW FL
+2.6; VS200 ASW 3.4.1 and 4.1; raw, JPEG and JPEG 2000 tiles; uint8 RGB and uint16 grey; z
 stacks; one short time series; multi-image slide-scanner files with label,
 overview and focus map.
 

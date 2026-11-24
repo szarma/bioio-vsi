@@ -33,6 +33,7 @@ KNOWN_PRODUCTS: frozenset[str] = frozenset(
         "VS200 ASW 3.4.1",
         "VS200 ASW 4.1",
         "cellSens Dimension 4.3",
+        "VS-ASW FL 2.6",
     }
 )
 
@@ -191,7 +192,9 @@ def _format_redacted_vsi_error(exc: VsiError, *, safe_detail: str | None = None)
     return f"Error: {name}"
 
 
-def _pixel_file_section(vsi_path: str, stack_id: int) -> list[str]:
+def _pixel_file_section(
+    vsi_path: str, stack_id: int, vsi_size: tuple[int, int] | None
+) -> list[str]:
     try:
         ets_path = _find_ets_path(vsi_path, stack_id)
     except MultipleEtsCandidatesError:
@@ -202,7 +205,7 @@ def _pixel_file_section(vsi_path: str, stack_id: int) -> list[str]:
         return [f"  pixel file: {PixelFileState.ABSENT.name}"]
 
     try:
-        eh = inspect_ets_header(ets_path)
+        eh = inspect_ets_header(ets_path, vsi_size=vsi_size)
     except VsiError as exc:
         return [
             f"  pixel file: {PixelFileState.MALFORMED.name} "
@@ -286,16 +289,18 @@ def describe_redacted(path: str | os.PathLike[str]) -> tuple[str, bool]:
 
             fr = _external_frame(vol, vsi_path=path_str, stack_id=int(sid))
             w = h = None
+            vsi_size = None
             if fr is not None:
                 ext = child(fr, 2018)
                 rect = _val(ext, 2053) if ext else None
                 if (
-                    rect
-                    and isinstance(rect, (list, tuple))
-                    and len(rect) >= 4
-                    and all(isinstance(x, int) and not isinstance(x, bool) for x in rect[2:4])
+                    isinstance(rect, (list, tuple))
+                    and len(rect) == 4
+                    and all(isinstance(x, int) and not isinstance(x, bool) for x in rect)
                 ):
                     w, h = int(rect[2]), int(rect[3])
+                    if rect[0] == 0 and rect[1] == 0 and w > 0 and h > 0:
+                        vsi_size = w, h
             sizes = _val(vol, 2003)
             slot_kinds: list[str] = []
             for dd in kids(vol, 2007):
@@ -313,7 +318,9 @@ def describe_redacted(path: str | os.PathLike[str]) -> tuple[str, bool]:
                 rendered = ", ".join(slot_kinds)
                 lines.append(f"  slot order: [{rendered}]")
 
-            lines.extend(_pixel_file_section(path_str, int(sid) if isinstance(sid, int) else 0))
+            lines.extend(
+                _pixel_file_section(path_str, int(sid) if isinstance(sid, int) else 0, vsi_size)
+            )
     except VsiError as exc:
         lines.append(_format_redacted_vsi_error(exc))
         has_error = True

@@ -7,8 +7,8 @@ were established is in `format.md`.
 
 ## What is refused
 
-- **Files with more than one image** (slide scanners: scans, overview, label)
-  are refused. Reading them as scenes is planned, not designed yet.
+- **Multi-image layouts outside VSI format 3.7** are refused. The legacy
+  scanner case is described below.
 - **A positive origin offset** in the `.ets` header is refused. Only zero and
   negative offsets have been seen, and a positive one would mean something the
   placement rule (`format.md`, section 4) does not cover.
@@ -43,10 +43,21 @@ not, which is why the accepting choices below are made conservatively.
 
 ## How values are reported
 
-- **Dimension order through bioio is TCZYX**, bioio's default. `BioImage`
-  presents TCZYX whatever a reader returns; for direct `Reader` users this
-  gives the same order for every file, where the native order differs between
-  files from the same microscope.
+- **Legacy scanner scenes use the stored stack ID.** On format 3.7 the reader
+  exposes main scans (type 0), then overviews (type 1), in metadata order
+  within each type. The default is the first main scan. Scene names use
+  `stackN` when several scenes are present. Other volumes in `OS-1` have no
+  external image tiles. Selecting a scene resets the resolution level to 0.
+- **Legacy scanner dimensions come from the paired VSI** when the ETS header
+  has the observed version-2 RGB JPEG 2000 layout and no extents. The reader
+  validates the tile table against that size and refuses an orphan legacy ETS:
+  the padded tile grid cannot give the exact image size.
+- **RGB uses a trailing samples axis.** The standalone reader returns
+  `(Y, X, 3)` for RGB planes and regions. The bioio reader uses `TCZYXS`,
+  with `C` reserved for acquisition channels.
+- **Acquisition axes through bioio use TCZYX order.** This matches
+  `BioImage` and gives direct `Reader` users a consistent order when the
+  native order differs between files from the same microscope.
 - **Z planes stay in acquisition order and bioio's Z spacing is the absolute
   step.** In many cellSens stacks z decreases with plane index. Keeping stored
   order keeps plane indices identical to cellSens, Fiji, Bio-Formats and

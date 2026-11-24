@@ -28,11 +28,13 @@ Developers use [uv](https://docs.astral.sh/uv/); see [AGENTS.md](https://github.
 
 **Reads** single-image cellSens files: uint8/uint16, raw or JPEG 2000 tiles,
 optional pyramids, any declared order of time, z, and channel.
+Also reads main scans and overviews from the legacy VS-ASW FL 2.6 layout
+(VSI format 3.7, tested with OpenSlide's `OS-1`), with RGB JPEG 2000 tiles.
 
-**Refuses** (with a named error): missing pixel file, multiple images per
-``.vsi``, unsupported compression or pixel type, size mismatches, incomplete
-tile grids, lambda/phase dimensions, truncated metadata fields, and unknown
-metadata units.
+**Refuses** (with a named error): missing pixel file, other multi-image layouts,
+legacy ETS files without their companion VSI, unsupported compression or pixel
+type, size mismatches, incomplete tile grids, lambda/phase dimensions,
+truncated metadata fields, and unknown metadata units.
 
 Why each of these is refused, and how values such as z spacing and channel
 names are reported, is in [docs/design.md](https://github.com/szarma/bioio-vsi/blob/main/docs/design.md).
@@ -61,6 +63,13 @@ stack = image.get_image_dask_data("TCZYX")  # dimension order TCZYX
 plane = stack[0, 0, 0].compute()
 print(image.physical_pixel_sizes, image.channel_names)
 ```
+
+For supported scanner files, the first main scan is the default. In bioio,
+select a scene by its stack name, for example `image.set_scene("stack10001")`
+for the `OS-1` main scan. The RGB samples are the trailing axis in `TCZYXS`.
+For the standalone API, use `open_vsi("OS-1.vsi", stack_id=10001)` and
+`read_region(y=500, x=500, height=30, width=30)` on the returned image to read
+a small `(Y, X, 3)` array.
 
 Z planes are in acquisition order, and in many cellSens stacks z decreases with
 plane index. bioio reports the z spacing as a positive distance; the signed step
