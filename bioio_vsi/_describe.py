@@ -58,6 +58,7 @@ def _pixel_file_line(
     stack_id: int,
     *,
     redact: bool,
+    vsi_size: tuple[int, int] | None,
 ) -> str:
     try:
         ets_path = _find_ets_path(path_str, stack_id)
@@ -73,7 +74,7 @@ def _pixel_file_line(
         return "  pixel file: absent"
 
     try:
-        eh = inspect_ets_header(ets_path)
+        eh = inspect_ets_header(ets_path, vsi_size=vsi_size)
     except VsiError as exc:
         label = os.path.basename(ets_path) if not redact else "<pixel file>"
         detail = _format_vsi_error(exc, redact=redact)
@@ -196,30 +197,20 @@ def describe_vsi(path: str | Path, *, redact: bool = False) -> str:
 
         _append_or_unreadable(lines, "type code", _itype_line)
 
-        def _size_line(
-            volume: FieldNode = vol,
-            image_path: str = vol_path,
-            stack_id: int = sid,
-            file_path: str = path_str,
-        ) -> str | None:
-            fr = _external_frame(volume, vsi_path=file_path, stack_id=stack_id)
-            if fr is None:
-                return None
-            frame_path = f"{image_path}/2002[{fr.second}]"
-            ext = unique_child(fr, 2018, path=frame_path)
-            if ext is None:
-                return None
-            ext_path = f"{frame_path}/2018"
-            rect = node_value(ext, path=ext_path, tag=2053)
-            if rect is None:
-                return None
-            _x0, _y0, w, h = read_boundary_rect(
-                rect,
-                path=f"{ext_path}/2053",
-            )
-            return f"  size: {w} x {h}"
-
-        _append_or_unreadable(lines, "size", _size_line)
+        vsi_size = None
+        try:
+            fr = _external_frame(vol, vsi_path=path_str, stack_id=sid)
+            if fr is not None:
+                frame_path = f"{vol_path}/2002[{fr.second}]"
+                ext = unique_child(fr, 2018, path=frame_path)
+                ext_path = f"{frame_path}/2018"
+                rect = node_value(ext, path=ext_path, tag=2053)
+                if rect is not None:
+                    _, _, w, h = read_boundary_rect(rect, path=f"{ext_path}/2053")
+                    vsi_size = w, h
+                    lines.append(f"  size: {w} x {h}")
+        except VsiError as exc:
+            lines.append(f"  size: unreadable ({exc})")
 
         def _sizes_line(
             volume: FieldNode = vol,
@@ -271,7 +262,7 @@ def describe_vsi(path: str | Path, *, redact: bool = False) -> str:
 
         _append_or_unreadable(lines, "slot order", _slots_line)
 
-        lines.append(_pixel_file_line(path_str, sid, redact=False))
+        lines.append(_pixel_file_line(path_str, sid, redact=False, vsi_size=vsi_size))
 
     base = os.path.join(
         os.path.dirname(path_str),

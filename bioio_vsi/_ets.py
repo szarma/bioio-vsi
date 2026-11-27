@@ -21,8 +21,10 @@ from bioio_vsi.errors import (
     InvalidStructureError,
     SizeMismatchError,
     TruncatedFileError,
+    UndeclaredCoordinateError,
     UnsupportedColourSpaceError,
     UnsupportedCompressionError,
+    UnsupportedFeatureError,
     UnsupportedPixelTypeError,
     UnsupportedTileLayoutError,
 )
@@ -241,6 +243,13 @@ class EtsIndex:
             )
 
         nd = h.ndim
+        slot_end = 2 + len(h.extent_slots)
+        if slot_end > nd - 1:
+            raise InvalidStructureError("more ETS extents than coordinate slots", path=path)
+        if np.any(coords[:, slot_end : nd - 1] != 0):
+            raise UndeclaredCoordinateError(
+                "ETS coordinate without a declared extent varies", path=path
+            )
         th, tw = h.tile_height, h.tile_width
         # A complete grid needs at least this many tiles. Checking the count first
         # keeps a header that declares an absurd extent from being enumerated.
@@ -284,8 +293,6 @@ class EtsIndex:
         for level_i in range(n_levels):
             ly_floor, lx_floor = _level_extent(h.stored_height, h.stored_width, level_i)
             if ly_floor == 0 or lx_floor == 0:
-                from bioio_vsi.errors import UnsupportedFeatureError
-
                 raise UnsupportedFeatureError(
                     f"pyramid level {level_i} has zero floor size ({ly_floor}x{lx_floor})",
                     path=path,
@@ -304,7 +311,7 @@ class EtsIndex:
         groups: dict[tuple[int, tuple[int, ...]], set[tuple[int, int]]] = defaultdict(set)
         for row in coords:
             level_i = int(row[-1])
-            plane_key = tuple(int(x) for x in row[2 : nd - 1])
+            plane_key = tuple(int(x) for x in row[2:slot_end])
             groups[(level_i, plane_key)].add((int(row[0]), int(row[1])))
 
         observed_pairs = set(groups.keys())
@@ -363,14 +370,21 @@ def _read_main_header(path: str, fsize: int, blob: bytes) -> dict[str, Any]:
     }
 
 
-def _parse_second_header(path_str: str, second: bytes, *, for_reading: bool) -> dict[str, Any]:
+def _parse_second_header(
+    path_str: str,
+    second: bytes,
+    main: dict[str, Any],
+    *,
+    for_reading: bool,
+    vsi_size: tuple[int, int] | None,
+) -> dict[str, Any]:
     if len(second) < 40:
         raise TruncatedFileError("second header too short", path=path_str)
     try:
         hdr = ETS_HDR_PREFIX.unpack_from(second, 0)
     except struct.error as exc:
         raise InvalidStructureError("cannot unpack ETS embedded header", path=path_str) from exc
-    emagic, _eversion, ptype, ncomp, cspace, comp, quality, tw, th, td = hdr
+    emagic, eversion, ptype, ncomp, cspace, comp, quality, tw, th, td = hdr
     if emagic != b"ETS\x00":
         raise InvalidStructureError(f"bad embedded header magic {emagic!r}", path=path_str)
 
@@ -379,7 +393,18 @@ def _parse_second_header(path_str: str, second: bytes, *, for_reading: bool) -> 
             f"pixel type code {ptype} is not uint8 (2) or uint16 (4)",
             path=path_str,
         )
-    if for_reading:
+    if len(second) < 188:
+        raise TruncatedFileError("second header too short for extent count", path=path_str)
+    n_extents = struct.unpack_from("<I", second, 184)[0]
+    legacy_rgb = (
+        main["version"] == 2
+        and main["ndim"] == 4
+        and len(second) == 228
+        and eversion == 0x30003
+        and n_extents == 0
+        and (ptype, ncomp, cspace, comp, tw, th, td) == (2, 3, 4, 3, 512, 512, 1)
+    )
+    if for_reading and not legacy_rgb:
         if cspace != SUPPORTED_COLOUR_SPACE:
             raise UnsupportedColourSpaceError(
                 f"colour space {cspace} is not supported "
@@ -408,22 +433,25 @@ def _parse_second_header(path_str: str, second: bytes, *, for_reading: bool) -> 
                 path=path_str,
             )
 
-    if len(second) < 188:
-        raise TruncatedFileError("second header too short for extent count", path=path_str)
-    n_extents = struct.unpack_from("<I", second, 184)[0]
-    extent_end = 188 + 4 * n_extents
-    if len(second) < extent_end:
-        raise InvalidStructureError(
-            f"extent count {n_extents} needs {extent_end} bytes in second header, "
-            f"have {len(second)}",
-            path=path_str,
-        )
-    try:
-        extent_vals = list(struct.unpack_from(f"<{n_extents}I", second, 188))
-    except struct.error as exc:
-        raise InvalidStructureError("cannot unpack extent list", path=path_str) from exc
-    if len(extent_vals) < 2:
-        raise InvalidStructureError(f"extent list too short ({extent_vals})", path=path_str)
+    extent_vals: tuple[int, ...]
+    if legacy_rgb:
+        if vsi_size is None:
+            raise UnsupportedFeatureError(
+                "legacy ETS omits image extents; open the companion VSI for the exact size",
+                path=path_str,
+            )
+        extent_vals = vsi_size
+    else:
+        extent_end = 188 + 4 * n_extents
+        if len(second) < extent_end:
+            raise InvalidStructureError(
+                f"extent count {n_extents} needs {extent_end} bytes in second header, "
+                f"have {len(second)}",
+                path=path_str,
+            )
+        extent_vals = struct.unpack_from(f"<{n_extents}I", second, 188)
+        if len(extent_vals) < 2:
+            raise InvalidStructureError(f"extent list too short ({extent_vals})", path=path_str)
 
     use_pyramid = 0
     if len(second) >= 152:
@@ -432,6 +460,8 @@ def _parse_second_header(path_str: str, second: bytes, *, for_reading: bool) -> 
             use_pyramid = struct.unpack_from(f"<{rest_count}I", second, 40)[28]
     origin_x = struct.unpack_from("<i", second, 172)[0] if len(second) >= 176 else 0
     origin_y = struct.unpack_from("<i", second, 176)[0] if len(second) >= 180 else 0
+    if legacy_rgb and (origin_x or origin_y):
+        raise UnsupportedFeatureError("legacy ETS with a non-zero origin", path=path_str)
 
     return {
         "ptype": int(ptype),
@@ -451,7 +481,9 @@ def _parse_second_header(path_str: str, second: bytes, *, for_reading: bool) -> 
     }
 
 
-def inspect_ets_header(path: str | Path) -> EtsHeader:
+def inspect_ets_header(
+    path: str | Path, *, vsi_size: tuple[int, int] | None = None
+) -> EtsHeader:
     """Read ETS headers only (no tile payloads). Does not enforce decoding policy."""
     path_str = str(path)
     fsize = os.path.getsize(path_str)
@@ -464,7 +496,9 @@ def inspect_ets_header(path: str | Path) -> EtsHeader:
         second = f.read(addsize)
         if len(second) < addsize:
             raise TruncatedFileError("truncated second header", path=path_str)
-        parsed = _parse_second_header(path_str, second, for_reading=False)
+        parsed = _parse_second_header(
+            path_str, second, main_d, for_reading=False, vsi_size=vsi_size
+        )
         tabpos = int(main_d["tabpos"])
         ntiles = int(main_d["ntiles"])
         rec = 4 + 4 * int(main_d["ndim"]) + 8 + 4 + 4
@@ -546,7 +580,7 @@ def _validate_tile_payloads(
                     )
 
 
-def read_ets_index(path: str | Path) -> EtsIndex:
+def read_ets_index(path: str | Path, *, vsi_size: tuple[int, int] | None = None) -> EtsIndex:
     """Read headers and tile table only (no tile payloads)."""
     path_str = resolve_path(path)
     fsize = os.path.getsize(path_str)
@@ -562,7 +596,7 @@ def read_ets_index(path: str | Path) -> EtsIndex:
         if len(second) < addsize:
             raise TruncatedFileError("truncated second header", path=path_str)
 
-        parsed = _parse_second_header(path_str, second, for_reading=True)
+        parsed = _parse_second_header(path_str, second, main_d, for_reading=True, vsi_size=vsi_size)
         extent_w, extent_h = parsed["extent_w"], parsed["extent_h"]
         extent_slots = parsed["extent_slots"]
 

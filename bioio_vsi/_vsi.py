@@ -42,9 +42,12 @@ from bioio_vsi._tree import (
     load_tree,
 )
 
+LEGACY_SCANNER_FORMAT = (3, 7)
+
 # Decision 8: warn on unseen format versions that pass structural checks.
 TESTED_FORMAT_VERSIONS: frozenset[tuple[int, int]] = frozenset(
     {
+        LEGACY_SCANNER_FORMAT,
         (3, 22),
         (3, 26),
         (3, 27),
@@ -77,6 +80,12 @@ def format_version_tuple(raw: Sequence[int] | None) -> tuple[int, int] | None:
     if isinstance(packed, bool) or not isinstance(packed, int):
         return None
     return (packed >> 16, packed & 0xFFFF)
+
+
+def _format_version_raw(tree: VsiTree) -> list[int] | None:
+    path = f"{tree.path}/2000/2035"
+    raw = node_value(collection_root(tree), path=tree.path, tag=2035)
+    return None if raw is None else read_format_version_raw(raw, path=path)
 
 
 @dataclass
@@ -330,14 +339,9 @@ def _parse_volume_node(tree: VsiTree, volume: FieldNode) -> ImageVolumeMeta:
         )
     )
 
-    coll = collection_root(tree)
-    raw_2035 = node_value(coll, path=vsi_path, tag=2035)
-    fmt_ver = None
-    fmt_build = None
-    if raw_2035 is not None:
-        parsed_2035 = read_format_version_raw(raw_2035, path=f"{vsi_path}/2000/2035")
-        fmt_ver = format_version_tuple(parsed_2035)
-        fmt_build = parsed_2035[1]
+    raw_2035 = _format_version_raw(tree)
+    fmt_ver = format_version_tuple(raw_2035)
+    fmt_build = None if raw_2035 is None else raw_2035[1]
 
     doc = document_root(tree)
     writer = (
@@ -575,18 +579,53 @@ def list_image_volumes(tree: VsiTree) -> list[FieldNode]:
     )
 
 
-def parse_single_image(tree: VsiTree) -> ImageVolumeMeta:
-    volumes = list_image_volumes(tree)
+def _require_single_image(tree: VsiTree, volumes: list[FieldNode]) -> FieldNode:
     if not volumes:
         raise errors.NoImageError("no image volumes (tag 2001)", path=tree.path)
     if len(volumes) > 1:
         ids = [v.second for v in volumes]
         raise errors.MultiImageError(
             f"{len(volumes)} images (stack ids {ids}); "
-            "only single-image cellSens files are supported",
+            "multi-image layout is not supported",
             path=tree.path,
         )
-    meta = _parse_volume_node(tree, volumes[0])
+    return volumes[0]
+
+
+def list_scene_volumes(tree: VsiTree) -> list[FieldNode]:
+    """List the main scans followed by the overviews in the supported scanner layout."""
+    volumes = list_image_volumes(tree)
+    if (
+        len(volumes) <= 1
+        or format_version_tuple(_format_version_raw(tree)) != LEGACY_SCANNER_FORMAT
+    ):
+        return [_require_single_image(tree, volumes)]
+
+    main_scans: list[FieldNode] = []
+    overviews: list[FieldNode] = []
+    for volume in volumes:
+        if volume.second is None or volume.second < 0:
+            raise errors.InvalidIdentifierError(
+                "scanner volume lacks a valid stack ID", path=tree.path
+            )
+        path = f"{tree.path}/2000/2001[{volume.second}]"
+        props = unique_child(volume, 2005, path=path)
+        role = read_optional_int(
+            node_value(props, path=f"{path}/2005", tag=2074),
+            path=f"{path}/2005/2074",
+            field="2074",
+        )
+        if role == 0:
+            main_scans.append(volume)
+        elif role == 1:
+            overviews.append(volume)
+    if not main_scans:
+        raise errors.NoImageError("legacy scanner file has no main scan", path=tree.path)
+    return main_scans + overviews
+
+
+def parse_image_volume(tree: VsiTree, volume: FieldNode) -> ImageVolumeMeta:
+    meta = _parse_volume_node(tree, volume)
     if meta.format_version and meta.format_version not in TESTED_FORMAT_VERSIONS:
         warnings.warn(
             f"{tree.path}: format version {meta.format_version[0]}.{meta.format_version[1]} "
@@ -595,6 +634,10 @@ def parse_single_image(tree: VsiTree) -> ImageVolumeMeta:
             stacklevel=2,
         )
     return meta
+
+
+def parse_single_image(tree: VsiTree) -> ImageVolumeMeta:
+    return parse_image_volume(tree, _require_single_image(tree, list_image_volumes(tree)))
 
 
 def load_vsi(path: str | Path) -> ImageVolumeMeta:

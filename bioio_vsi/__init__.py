@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from bioio_vsi._describe import describe_vsi as describe
 from bioio_vsi._paths import resolve_path
 from bioio_vsi._stack import OrphanEtsImage, VsiImage
-from bioio_vsi._vsi import load_vsi
-from bioio_vsi.errors import VsiError
+from bioio_vsi._tree import load_tree
+from bioio_vsi._vsi import list_scene_volumes, parse_image_volume
+from bioio_vsi.errors import InvalidIdentifierError, VsiError
 
 if TYPE_CHECKING:
     from bioio_vsi.reader import Reader
@@ -30,9 +31,19 @@ __all__ = [
 ]
 
 
-def open_vsi(path: str) -> VsiImage:
-    """Open a single-image cellSens VSI and its external ETS pixel file."""
-    meta = load_vsi(path)
+def open_vsi(path: str | Path, *, stack_id: int | None = None) -> VsiImage:
+    """Open a VSI stack by ID. The default is the first main scan or the only image."""
+    tree = load_tree(resolve_path(path))
+    volumes = list_scene_volumes(tree)
+    volume = volumes[0]
+    if stack_id is not None:
+        for candidate in volumes:
+            if (candidate.second if candidate.second is not None else 0) == stack_id:
+                volume = candidate
+                break
+        else:
+            raise InvalidIdentifierError(f"no scene with stack ID {stack_id}", path=tree.path)
+    meta = parse_image_volume(tree, volume)
     return VsiImage(meta)
 
 
@@ -60,7 +71,7 @@ def expected_tile_pixels(**kwargs: Any) -> Any:
     return _fn(**kwargs)
 
 
-def open_ets(path: str) -> OrphanEtsImage:
+def open_ets(path: str | Path) -> OrphanEtsImage:
     """Open an orphan ETS pixel file (geometry only, no axis labels)."""
     return OrphanEtsImage(resolve_path(path))
 

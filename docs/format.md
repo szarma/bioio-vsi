@@ -27,7 +27,7 @@ All integers are little-endian.
 - `name.vsi` plus a sibling directory `_name_/` holding one sub-directory
   `stackN/` per image, each with one pixel file. [obs]
 - The pixel file is `frame_t_0.ets` in cellSens Dimension files and in VS200
-  fluorescence stacks, and `frame_t.ets` in VS200 RGB stacks. [obs]
+  fluorescence stacks. Legacy `OS-1` and VS200 RGB use `frame_t.ets`. [obs]
 - `N` is the id of the image in the `.vsi` (the second tag of its 2001 node,
   section 3). Ids seen: 1 for the only or first image, 10000 and up for further
   images in slide-scanner files. Confirmed for ids 1, 10000, 10002, 10005 by
@@ -130,38 +130,44 @@ lines up with the pyramid-level coordinate (section 4).
 
 ### Main header, 64 bytes [sio, obs]
 
-`<4sIIIQIIQIIQII`: magic `SIS\0`, header size (64), version (3), number of
+`<4sIIIQIIQIIQII`: magic `SIS\0`, header size (64), version (2 or 3), number of
 dimensions `ndim`, offset of the second header (64), its size (228), unused,
 offset of the tile table, number of tiles, unused, offset of a free-chunk table,
-number of free chunks (0 in every file), unused.
+number of free chunks (20 in the `OS-1` main scan, 0 elsewhere), unused.
 
 ### Second header, 228 bytes [sio for the first ten fields; the rest obs]
 
 | Offset | Field | Values seen |
 |---|---|---|
 | 0 | magic `ETS\0` | |
-| 4 | version | 0x30006 in every file |
+| 4 | version | 0x30003 in `OS-1`, 0x30006 in other samples |
 | 8 | pixel type | 2 = uint8, 4 = uint16 |
 | 12 | samples per tile | 1, or 3 for RGB |
-| 16 | colour space | 1 grey, 4 for the RGB JPEG stacks |
+| 16 | colour space | 1 grey, 4 in RGB JPEG and JPEG 2000 stacks |
 | 20 | compression | 0 raw, 2 JPEG, 3 JPEG 2000 |
-| 24 | quality | 100 raw, 90 JPEG, 98 or 100 JPEG 2000 |
+| 24 | quality | 100 raw, 90 JPEG, 90, 98 or 100 JPEG 2000 |
 | 28, 32, 36 | tile width, height, depth | 512 x 512, or the full frame; depth 1 |
 | 108 | background value | 65535, 4095, 0, or 0xEEEEEE for RGB |
 | 148 | component order | 0xFFFFFFFF grey, 1 for RGB |
 | 152 | pyramid flag | 1 exactly in the files that have more than one level |
 | 172, 176 | origin offset x, y | 0, or small negatives in stitched cellSens scans: the image starts at stored pixel (-x, -y); see section 4 |
-| 184 | number of extents | `ndim - 1`, or 2 for RGB images |
+| 184 | number of extents | `ndim - 1`, 2 in recent RGB images, or 0 in `OS-1` |
 | 188.. | extents | W, H, then the size of each further coordinate slot in order |
 | 216, 220 | the negated offset again | |
 
-The extents at 188 equal the `.vsi` values (`2053` and `2003`) in every file.
+Where present, the extents at 188 equal the `.vsi` values (`2053` and `2003`).
 [obs] Two consequences:
 
 - pairing a `stackN/` with its image can be *checked* rather than assumed;
-- an `.ets` whose `.vsi` is lost still gives exact width, height and plane
-  counts. Only the meaning of the slots (which is z, which is channel), names
-  and calibration are gone.
+- an `.ets` with extents still gives exact width, height and plane counts
+  when the `.vsi` is missing. Slot meanings, image names and calibration come
+  from the `.vsi`.
+
+The two version-2 pixel files in `OS-1` have no extent entries. The paired
+`.vsi` provides the dimensions through `2053`: 66982 x 76963 for stack 10001
+(main scan) and 6753 x 13196 for stack 1 (overview). Each image has a complete
+tile grid at every level for its VSI dimensions. Both have one extra coordinate
+slot that is 0 throughout, and their tile-grid origin is (0, 0). [obs]
 
 ### Tile table [sio, obs]
 
@@ -169,7 +175,8 @@ At the offset in the main header, `ntiles` records of `4 * (ndim + 5)` bytes:
 `<I` (= `ndim`), `ndim` x `<i` coordinates, `<Q` byte offset, `<I` byte length,
 `<I` (values 0..7, meaning unknown).
 
-- The table is the last thing in the file in every sample. [obs]
+- The tile table ends the file in most samples. The `OS-1` main scan declares
+  a free-chunk table after it. [obs]
 - The tile data is not stored in coordinate order. The first tile on disk is
   z 45 of the fourth channel in `tzc-z-down` and z 176 of the fourth channel
   in `czt-z-up`. Reading planes in file order gives the wrong order. [obs]
@@ -208,10 +215,14 @@ At the offset in the main header, `ntiles` records of `4 * (ndim + 5)` bytes:
   libjpeg-turbo (via imagecodecs) matches Bio-Formats exactly; slideio differs
   from both by up to 15 grey levels, mean 0.4. JPEG pixels depend on the
   decoder. [obs, =bf]
-- JPEG 2000 tiles are bare codestreams, 16-bit, one sample. Quality 98 files are
-  lossy. Decoding with OpenJPEG (via imagecodecs) matches slideio exactly on
+- JPEG 2000 tiles are bare codestreams. The cellSens examples are single-sample
+  16-bit images. Quality 98 files are lossy. Decoding with OpenJPEG (via
+  imagecodecs) matches slideio exactly on
   one quality-100 and one quality-98 file, and Bio-Formats to within 1 grey
   level on both. [=sio, =bf]
+- `OS-1` JPEG 2000 tiles decode to 8-bit RGB, with the sample order matching
+  slideio in regions of the main scan, including a region that crosses
+  multiple tiles and a region at the bottom-right edge. [obs, =sio]
 
 ### Pyramid
 
@@ -297,7 +308,8 @@ Single-field stacks and all slide-scanner files have offset 0.
 |---|---|---|
 | absent | the only image in cellSens Dimension files | `stack1/` |
 | 0 | main scan, e.g. `20x_BF_01` | `stackN/` |
-| 1 | `Overview` | `stack10000/` |
+| 1 | `Overview` | `stack10000/` in VS200 samples, `stack1/` in `OS-1` |
+| 2 | unknown (observed in `OS-1`) | no external pixel file in `OS-1` |
 | 4 | `20x FocusMap` | a TIFF directory inside the `.vsi`; field 2016 carries a second tag (4 or 6) that looks like its IFD number [inferred] |
 | 64 | main scan with a z dimension (slideio calls it "EFI stack") | `stackN/` |
 | 256 | `Label` (slideio: macro image) | `stack1/` |
@@ -313,6 +325,7 @@ The first value of `2035` reads as `major << 16 | minor`.
 
 | Product (tag 34, 35) | Build | Format | Files | Differences from the others |
 |---|---|---|---|---|
+| VS-ASW FL 2.6 | 10555 | 3.7 | 1 public | ETS versions 2 and 0x30003, no ETS extent list, RGB JPEG 2000 |
 | cellSens Dimension 3.1 | 21199 | 3.22 | 1 public | none in structure; one extra tag (175122) |
 | VS200 ASW 3.4.1 | 26606 | 3.26 | 1 public | several images per file; volume version 403; flag 0x28 blobs |
 | VS200 ASW 4.1 | 27540, 27544 | 3.27 | 3 public | as 3.4.1, plus four new tags |
@@ -320,10 +333,9 @@ The first value of `2035` reads as `major << 16 | minor`.
 | not recorded | 34364 | 3.32 | 1 public | document properties absent; distinct `2021`/`2419` names; eight tags not seen elsewhere |
 | cellSens Dimension 4.3 (resaved by a newer build) | 35701 | 3.33 | 2 public | none in structure |
 
-- The `.ets` version fields are identical in every file (3 and 0x30006).
-- Across six format versions, every value in the section 2 table sits at the
-  same path. What changes between versions is which *other* tags exist and, for
-  the slide scanner, how many images there are. [obs]
+- The remaining samples use `.ets` versions 3 and 0x30006.
+- The dimensions of external images are at the same VSI path across the
+  samples. The tags present and the number of images vary. [obs]
 - The product named in tag 34/35 is not the writing software's version: two
   files say "4.3 build 31056" in the document properties while `2035` records
   build 35701. `2035` is the more specific stamp. [obs]
@@ -335,4 +347,4 @@ The first value of `2035` reads as `major << 16 | minor`.
 - Why RGB images carry an extra constant coordinate.
 - Multi-file time series, lambda and phase dimensions, compression codes other
   than 0, 2, 3, and `.vsi` files with no `.ets`.
-- Anything about files written before cellSens 3.1.
+- Other legacy scanner writers and releases.

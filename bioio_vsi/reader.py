@@ -28,14 +28,14 @@ from dask import delayed
 from fsspec.implementations.local import LocalFileSystem
 from fsspec.spec import AbstractFileSystem
 
-from bioio_vsi import open_vsi
 from bioio_vsi._paths import resolve_path
-from bioio_vsi._stack import TileReadSpec, level_shape, read_tile_from_spec
-from bioio_vsi._tree import VsiTree, collection_root, load_tree
-from bioio_vsi._vsi import ImageVolumeMeta, load_vsi
+from bioio_vsi._stack import TileReadSpec, VsiImage, level_shape, read_tile_from_spec
+from bioio_vsi._tree import FieldNode, VsiTree, collection_root, load_tree
+from bioio_vsi._vsi import ImageVolumeMeta, list_scene_volumes, parse_image_volume
 from bioio_vsi.errors import InvalidStructureError, TruncatedFileError, VsiError
 
 _DIMS = dimensions.DEFAULT_DIMENSION_ORDER_LIST
+_DIMS_WITH_SAMPLES = list(dimensions.DEFAULT_DIMENSION_ORDER_WITH_SAMPLES)
 _TILE_BLOCK = 2
 
 
@@ -49,7 +49,7 @@ def _z_step_um(meta: ImageVolumeMeta) -> float | None:
 def _read_tile_block(
     specs: tuple[TileReadSpec, ...],
     placements: tuple[tuple[int, int, int, int], ...],
-    out_shape: tuple[int, int],
+    out_shape: tuple[int, ...],
     dtype: np.dtype,
 ) -> np.ndarray:
     out = np.zeros(out_shape, dtype=dtype)
@@ -62,7 +62,7 @@ def _read_tile_block(
 def _read_plane_from_specs(
     specs: tuple[TileReadSpec, ...],
     placements: tuple[tuple[int, int, int, int], ...],
-    out_shape: tuple[int, int],
+    out_shape: tuple[int, ...],
     dtype: np.dtype,
 ) -> np.ndarray:
     if len(specs) == 1:
@@ -71,7 +71,9 @@ def _read_plane_from_specs(
     return _read_tile_block(specs, placements, out_shape, dtype)
 
 
-def _tile_coord(img: Any, level: int, t: int, c: int, z: int, ty: int, tx: int) -> tuple[int, ...]:
+def _tile_coord(
+    img: VsiImage, level: int, t: int, c: int, z: int, ty: int, tx: int
+) -> tuple[int, ...]:
     nd = img._index.header.ndim
     layout = img._layout
     pos = {"t": t, "c": c, "z": z}
@@ -82,10 +84,13 @@ def _tile_coord(img: Any, level: int, t: int, c: int, z: int, ty: int, tx: int) 
     return tuple(full)
 
 
-def _dask_plane_tiled(img: Any, level: int, t: int, c: int, z: int, dtype: np.dtype) -> da.Array:
+def _dask_plane_tiled(
+    img: VsiImage, level: int, t: int, c: int, z: int, dtype: np.dtype
+) -> da.Array:
     """One plane built from ``_TILE_BLOCK`` x ``_TILE_BLOCK`` tile-aligned dask chunks."""
     ly, lx = level_shape(img._meta.height, img._meta.width, level)
     th, tw = img._th, img._tw
+    samples = img._tile_shape()[2:]
     ny = (ly + th - 1) // th
     nx = (lx + tw - 1) // tw
     row_arrays: list[da.Array] = []
@@ -107,17 +112,16 @@ def _dask_plane_tiled(img: Any, level: int, t: int, c: int, z: int, dtype: np.dt
                     w = min(tw, lx - x_off)
                     specs.append(img.tile_read_spec(_tile_coord(img, level, t, c, z, ty, tx)))
                     placements.append((y_off - y_base, x_off - x_base, h, w))
-            block_h = y_block_end - y_base
-            block_w = x_block_end - x_base
+            block_shape = (y_block_end - y_base, x_block_end - x_base) + samples
             row_blocks.append(
                 da.from_delayed(
                     delayed(_read_tile_block)(
                         tuple(specs),
                         tuple(placements),
-                        (block_h, block_w),
+                        block_shape,
                         dtype,
                     ),
-                    shape=(block_h, block_w),
+                    shape=block_shape,
                     dtype=dtype,
                 )
             )
@@ -125,13 +129,16 @@ def _dask_plane_tiled(img: Any, level: int, t: int, c: int, z: int, dtype: np.dt
     return cast(da.Array, da.concatenate(row_arrays, axis=0))
 
 
-def _dask_plane_regions(img: Any, level: int, t: int, c: int, z: int, dtype: np.dtype) -> da.Array:
+def _dask_plane_regions(
+    img: VsiImage, level: int, t: int, c: int, z: int, dtype: np.dtype
+) -> da.Array:
     """One plane of a shifted (stitched, non-zero origin) image, in region chunks.
 
     Image tiles do not line up with stored tiles, so each chunk is a ``read_region`` call.
     """
     ly, lx = level_shape(img._meta.height, img._meta.width, level)
     bh, bw = _TILE_BLOCK * img._th, _TILE_BLOCK * img._tw
+    samples = img._tile_shape()[2:]
     rows: list[da.Array] = []
     for y0 in range(0, ly, bh):
         h = min(bh, ly - y0)
@@ -141,7 +148,7 @@ def _dask_plane_regions(img: Any, level: int, t: int, c: int, z: int, dtype: np.
             blocks.append(
                 da.from_delayed(
                     delayed(img.read_region)(y0, x0, h, w, t=t, c=c, z=z, level=level),
-                    shape=(h, w),
+                    shape=(h, w) + samples,
                     dtype=dtype,
                 )
             )
@@ -149,16 +156,11 @@ def _dask_plane_regions(img: Any, level: int, t: int, c: int, z: int, dtype: np.
     return cast(da.Array, da.concatenate(rows, axis=0))
 
 
-def _build_dask_stack(
-    vsi_path: str,
-    level: int,
-    shape_tcz: tuple[int, int, int],
-    y: int,
-    x: int,
-    dtype: np.dtype,
-) -> da.Array:
-    img = open_vsi(vsi_path)
-    t_size, c_size, z_size = shape_tcz
+def _build_dask_stack(img: VsiImage, level: int, shape: tuple[int, ...]) -> da.Array:
+    t_size, c_size, z_size = img.shape_tcz
+    plane_shape = shape[3:]
+    y, x = plane_shape[:2]
+    dtype = img.dtype
     shifted = img.is_shifted
     single = not shifted and img._th >= y and img._tw >= x
 
@@ -173,10 +175,10 @@ def _build_dask_stack(
                         delayed(_read_plane_from_specs)(
                             (spec,),
                             ((0, 0, y, x),),
-                            (y, x),
+                            plane_shape,
                             dtype,
                         ),
-                        shape=(y, x),
+                        shape=plane_shape,
                         dtype=dtype,
                     )
                 elif shifted:
@@ -186,17 +188,19 @@ def _build_dask_stack(
                 planes.append(plane_arr)
     return cast(
         da.Array,
-        da.stack(planes).reshape(t_size, c_size, z_size, y, x),
+        da.stack(planes).reshape(shape),
     )
 
 
 class Reader(reader.Reader):
-    """bioio reader for single-image cellSens VSI files."""
+    """bioio reader for cellSens VSI files."""
 
     NAME = "bioio-vsi"
 
     _meta: ImageVolumeMeta | None
     _scenes: tuple[str, ...] | None
+    _image: VsiImage | None
+    _scene_volumes: tuple[VsiTree, list[FieldNode]] | None
 
     @staticmethod
     def _is_supported_image(fs: AbstractFileSystem, path: str, **kwargs: Any) -> bool:
@@ -239,26 +243,50 @@ class Reader(reader.Reader):
         self._path = resolve_path(self._path)
         self._meta = None
         self._scenes = None
+        self._image = None
+        self._scene_volumes = None
         self._physical_pixel_sizes = None
         self._is_supported_image(self._fs, self._path)
 
+    def _ensure_scene_volumes(self) -> tuple[VsiTree, list[FieldNode]]:
+        if self._scene_volumes is None:
+            tree = load_tree(self._path)
+            self._scene_volumes = (tree, list_scene_volumes(tree))
+        return self._scene_volumes
+
     def _ensure_meta(self) -> ImageVolumeMeta:
         if self._meta is None:
-            self._meta = load_vsi(self._path)
+            tree, volumes = self._ensure_scene_volumes()
+            self._meta = parse_image_volume(tree, volumes[self.current_scene_index])
         return self._meta
+
+    def _ensure_image(self) -> VsiImage:
+        if self._image is None:
+            self._image = VsiImage(self._ensure_meta())
+        return self._image
 
     @property
     def scenes(self) -> tuple[str, ...]:
         if self._scenes is None:
-            meta = self._ensure_meta()
-            label = meta.name or f"stack{meta.stack_id}"
-            self._scenes = (label,)
+            _, volumes = self._ensure_scene_volumes()
+            if len(volumes) == 1:
+                meta = self._ensure_meta()
+                self._scenes = (meta.name or f"stack{meta.stack_id}",)
+            else:
+                self._scenes = tuple(f"stack{vol.second}" for vol in volumes)
         return self._scenes
+
+    def set_scene(self, scene_id: str | int) -> None:
+        previous = self.current_scene_index
+        super().set_scene(scene_id)
+        if self.current_scene_index != previous:
+            self._current_resolution_level = 0
+            self._meta = None
+            self._image = None
 
     @property
     def resolution_levels(self) -> tuple[int, ...]:
-        img = open_vsi(self._path)
-        return tuple(range(img.n_levels))
+        return tuple(range(self._ensure_image().n_levels))
 
     @property
     def metadata(self) -> Any:
@@ -302,12 +330,6 @@ class Reader(reader.Reader):
         if np.any(np.abs(flat - ref) / abs(ref) > 0.001):
             return None
         return timedelta(milliseconds=ref)
-
-    def _level_shape_tcz_yx(self) -> tuple[tuple[int, int, int], int, int, np.dtype]:
-        img = open_vsi(self._path)
-        level = self._current_resolution_level
-        t, c, z, y, x = img.level_shape(level)
-        return (t, c, z), y, x, img.dtype
 
     @staticmethod
     def _values_uniform_along_axes(arr: np.ndarray, fixed_axes: tuple[int, ...]) -> bool:
@@ -363,15 +385,16 @@ class Reader(reader.Reader):
         return coords
 
     def _read_delayed(self) -> xr.DataArray:
-        meta = self._ensure_meta()
-        shape_tcz, y, x, dtype = self._level_shape_tcz_yx()
+        img = self._ensure_image()
+        meta = img._meta
         level = self._current_resolution_level
-        stack = _build_dask_stack(self._path, level, shape_tcz, y, x, dtype)
-        coords = self._coords(meta, shape_tcz[1])
+        shape = img.level_shape(level)
+        stack = _build_dask_stack(img, level, shape)
+        coords = self._coords(meta, shape[1])
         tree: VsiTree = meta.tree
         return xr.DataArray(
             stack,
-            dims=_DIMS,
+            dims=_DIMS_WITH_SAMPLES if len(shape) == 6 else _DIMS,
             coords=coords,
             attrs={
                 constants.METADATA_UNPROCESSED: tree,
@@ -387,11 +410,12 @@ class Reader(reader.Reader):
         )
 
     def _read_immediate(self) -> xr.DataArray:
-        meta = self._ensure_meta()
-        img = open_vsi(self._path)
+        img = self._ensure_image()
+        meta = img._meta
         level = self._current_resolution_level
-        t, c, z, y, x = img.level_shape(level)
-        volume = np.zeros((t, c, z, y, x), dtype=img.dtype)
+        t, c, z = img.shape_tcz
+        shape = img.level_shape(level)
+        volume = np.empty(shape, dtype=img.dtype)
         for ti in range(t):
             for ci in range(c):
                 for zi in range(z):
@@ -400,7 +424,7 @@ class Reader(reader.Reader):
         tree = meta.tree
         return xr.DataArray(
             volume,
-            dims=_DIMS,
+            dims=_DIMS_WITH_SAMPLES if len(shape) == 6 else _DIMS,
             coords=coords,
             attrs={
                 constants.METADATA_UNPROCESSED: tree,
@@ -428,6 +452,8 @@ class Reader(reader.Reader):
         self._current_resolution_level = state["_current_resolution_level"]
         self._meta = None
         self._scenes = None
+        self._image = None
+        self._scene_volumes = None
         self._physical_pixel_sizes = None
         self._metadata = None
         self._xarray_dask_data = None

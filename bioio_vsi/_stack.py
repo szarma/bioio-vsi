@@ -190,7 +190,7 @@ def _build_layout(meta: ImageVolumeMeta, index: EtsIndex) -> AxisLayout:
 
 
 class VsiImage:
-    """One image from a single-image cellSens VSI file."""
+    """One image and its external pixel file."""
 
     def __init__(self, meta: ImageVolumeMeta) -> None:
         if meta.ets_path is None:
@@ -200,7 +200,7 @@ class VsiImage:
             )
         self._meta = meta
         self._path = resolve_path(meta.ets_path)
-        self._index = read_ets_index(self._path)
+        self._index = read_ets_index(self._path, vsi_size=(meta.width, meta.height))
         self._layout = _build_layout(meta, self._index)
         h = self._index.header
         self._dtype = h.dtype
@@ -244,14 +244,14 @@ class VsiImage:
     def n_levels(self) -> int:
         return self._layout.n_levels
 
-    def level_shape(self, level: object = 0) -> tuple[int, int, int, int, int]:
-        """Return (T, C, Z, Y, X) at the given pyramid level."""
+    def level_shape(self, level: object = 0) -> tuple[int, ...]:
+        """Return (T, C, Z, Y, X) with a trailing samples axis for RGB."""
         level_i = _index_arg(level, what="level")
         if level_i < 0 or level_i >= self.n_levels:
             raise IndexError(f"pyramid level {level_i} out of range 0..{self.n_levels - 1}")
         y, x = level_shape(self._meta.height, self._meta.width, level_i)
         t, c, z = self.shape_tcz
-        return t, c, z, y, x
+        return (t, c, z, y, x) + self._index.header.samples_shape_suffix
 
     @property
     def pixel_size_um(self) -> PixelSizeUm | None:
